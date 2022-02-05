@@ -19,6 +19,8 @@ jobs:
         dotnet-version: 5.0.x
     - name: Restore dependencies
       run: dotnet restore
+    - name: Install dependencies
+      run: dotnet add package Unity3D.SDK -Version 2020.3.13.1
     - name: Build
       run: dotnet build --no-restore
     - name: Test
