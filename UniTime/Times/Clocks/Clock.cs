@@ -1,63 +1,159 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace Kratorg.Internal.Times
 {
-    public class Clock : IObservable<double>, IDisposable
+    public interface IClock
     {
-        protected bool          _disposed   = false;
-        protected TimeSpan      _span       = TimeSpan.Zero;
-        
-        public double           modifier    = 1f;
-        public Symbol<bool>     isPaused    = new Symbol<bool>(true);
+        long StartingTick { get; }
+        long LastTick { get; }
+        TimeSpan Delta { get; }
+        TimeSpan Past { get; }
 
-        event Action<double>    ticked;
-        event Action            disposed;
+        void Update(long value);
+        IDisposable Decorate(Func<long, long> decorator);
+        IDisposable Subscribe(Action<long> observer);
+        IDisposable EndWhen(Predicate<IClock> predicate);
+    }
 
-        public DateTime First { get; protected set; } = DateTime.Now;
-        public TimeSpan Past => _span;
-        public double   Hours => _span.TotalHours;
-        public double   Minutes => _span.TotalMinutes;
-        public double   Seconds => _span.TotalSeconds;
-        public double   Milliseconds => _span.TotalMilliseconds;
-        public long     Ticks   => _span.Ticks;
+    public sealed class Clock : IClock, IDisposable
+    {
+        bool                    _disposed   = false;
+        int                     _isPaused   = -1;
+        List<Func<long, long>>  _decorators = new List<Func<long, long>>();
+        List<Predicate<IClock>> _ends       = new List<Predicate<IClock>>();
 
-        public virtual void Update(double value)
+        /// <summary>
+        /// Timestamp at which clock as been created
+        /// </summary>
+        public long StartingTick { get; } = DateTime.Now.Ticks;
+        /// <summary>
+        /// Timestamp of clock last Update
+        /// </summary>
+        public long LastTick     { get; }
+        /// <summary>
+        /// Time passed since <see cref="LastTick"/>last tick</see> and DateTime.Now.Tick
+        /// </summary>
+        public TimeSpan Delta => new TimeSpan(DateTime.Now.Ticks - LastTick);
+        public TimeSpan Past     { get; private set; } = TimeSpan.Zero;
+
+        public bool IsPaused
         {
-            if (isPaused.Value)
+            get => _isPaused >= 0;
+
+            set 
+            {
+                if (IsPaused == value) return;
+
+                if (value)
+                {
+                    _isPaused = _decorators.Count;
+                    _decorators.Add(Paused);
+                }
+                else
+                {
+                    _decorators.RemoveAt(_isPaused);
+                    _isPaused = -1;
+                }
+            }
+        }
+        public long Paused(long _) => 0L;
+
+        event Action<long> ticked;
+        
+        public void Update(long value)
+        {
+            if (_disposed)
             {
                 return;
             }
 
-            value   *= modifier;
-            _span.Add(new TimeSpan((long)(value * TimeSpan.TicksPerSecond)));
+            int count = _decorators.Count;
+            for (int i = 0; i < count; i++)
+            {
+                value = _decorators[i](value);
+            }
 
-            Raise(value);
-        }
-
-        protected virtual void Raise(double delta)
-        {
-            ticked?.Invoke(delta);
-        }
-
-        public IDisposable Subscribe(IObserver<double> observer)
-        {
-            if (_disposed) return null;
-
-            ticked += observer.OnNext;
+            Past.Add(new TimeSpan(value));
             
-            Action disposal = () => Unsubscribe(observer);
-            disposed += disposal;
+            ticked?.Invoke(value);
 
-            return new Unsubscriber(disposal);
+            count = _ends.Count;
+            for (int i = 0; i < count; i++)
+            {
+                if (_ends[i](this))
+                {
+                    Dispose();
+                    break;
+                }
+            }
         }
 
-        void Unsubscribe(IObserver<double> observer)
+        public IDisposable Decorate(Func<long, long> decorator)
         {
-            if (_disposed || observer == null) return;
+            int index = _decorators.IndexOf(decorator);
+            if (_disposed || index >= 0 || decorator == null) return null;
 
-            observer.OnCompleted();
+            _decorators.Add(decorator);
 
-            ticked -= observer.OnNext;
+            return new Unsubscriber(() => DecoratorUnsubscribe(decorator));
+        }
+
+        void DecoratorUnsubscribe(Func<long, long> decorator)
+        {
+            int index = _decorators.IndexOf(decorator);
+            if (_disposed || index < 0 || decorator == null)
+            {
+                return;
+            }
+
+            _decorators.RemoveAt(index);
+        }
+
+        public IDisposable Subscribe(Action<long> observer)
+        {
+            if (_disposed)
+            {
+                return null;
+            }
+
+            ticked += observer;
+
+            return new Unsubscriber(() => TickUnsubscribe(observer));
+        }
+
+        void TickUnsubscribe(Action<long> observer)
+        {
+            if (_disposed || observer == null)
+            {
+                return;
+            }
+
+            ticked -= observer;
+        }
+
+        public IDisposable EndWhen(Predicate<IClock> predicate)
+        {
+            int index = _ends.IndexOf(predicate);
+            if (_disposed || index >= 0 || predicate == null)
+            {
+                return null;
+            }
+
+            _ends.Add(predicate);
+
+            return new Unsubscriber(() => EndUnsubscribe(predicate));
+        }
+
+        void EndUnsubscribe(Predicate<IClock> predicate)
+        {
+            int index = _ends.IndexOf(predicate);
+            if (_disposed || index < 0 || predicate == null)
+            {
+                return;
+            }
+
+            _ends.RemoveAt(index);
         }
 
         public void Dispose()
@@ -66,21 +162,14 @@ namespace Kratorg.Internal.Times
             {
                 return;
             }
-            
+
             _disposed = true;
 
-            OnDispose();
+            ticked = null;
+            _decorators.Clear();
+            _ends.Clear();
 
             GC.SuppressFinalize(this);
         }
-
-        public virtual void OnDispose() 
-        {
-            disposed();
-
-            disposed = null;
-            ticked = null;
-            isPaused.Clear();
-        }
     }
-}
+};

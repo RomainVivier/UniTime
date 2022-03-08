@@ -4,19 +4,8 @@ namespace Kratorg.Internal.Times
 {
     public static class Extensions
     {
-        public static void Tick(this Action action, ClockMode mode = ClockMode.Main) 
-        {
-            var stopwatch = Time.Stopwatch(mode);
-            stopwatch.Subscribe((_) => action());
-            stopwatch.Start();
-        }
-
-        public static void Tick(this Action<double> action, ClockMode mode = ClockMode.Main)
-        {
-            var stopwatch = Time.Stopwatch(mode);
-            stopwatch.Subscribe(action);
-            stopwatch.Start();
-        }
+        public static Clock Tick(this Action action) => Time.Tick(action);
+        public static Clock Tick(this Action<long> action)=> Time.Tick(action);
 
         //public static void Tick(this Action action, double rate = 0.03D, ClockMode mode = ClockMode.Main)
         //{
